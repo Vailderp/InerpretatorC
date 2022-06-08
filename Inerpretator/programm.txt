@@ -1,1 +1,1 @@
-123
+const   float a =  -2.0f ;

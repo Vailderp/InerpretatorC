@@ -15,7 +15,7 @@ namespace prs
 	{
 		inline void __fastcall skip_space(const char** ptr_content)
 		{
-			while (**ptr_content == ' ')
+			while (**ptr_content == ' ' || **ptr_content == '\n' || **ptr_content == '\t')
 			{
 				(*ptr_content)++;
 			}
@@ -45,7 +45,11 @@ namespace prs
 	}
 
 	template <typename _CompU32, typename _FlagU32>
-	inline constexpr const bool __fastcall comp_flag(_CompU32 comp, _FlagU32 flag)
+	inline constexpr const bool __fastcall comp_flag(
+		_CompU32 comp, 
+		uint32_t ignore_mask, 
+		_FlagU32 flag
+	)
 	{
 		static_assert(
 			(std::is_arithmetic_v<_FlagU32> || std::is_enum_v<_FlagU32>) &&
@@ -55,11 +59,16 @@ namespace prs
 			"_CompU32 is not arithmetic type;"
 			"_CompU32 is not enum type;"
 			);
-		return (static_cast<uint32_t>(comp) & static_cast<uint32_t>(flag)) == static_cast<uint32_t>(flag);
+		return ((static_cast<uint32_t>(comp) & ignore_mask) == (static_cast<uint32_t>(flag)));
 	}
 
 	template <typename _CompU32, typename _FlagU32, typename... _FlagsU32>
-	inline constexpr const bool __fastcall comp_flag(_CompU32 comp, _FlagU32 flag, _FlagsU32... flags)
+	inline constexpr const bool __fastcall comp_flag(
+		_CompU32 comp, 
+		uint32_t ignore_mask, 
+		_FlagU32 flag,  
+		_FlagsU32... flags
+	)
 	{
 		static_assert(
 			(std::is_arithmetic_v<_FlagU32> || std::is_enum_v<_FlagU32>) && 
@@ -69,8 +78,8 @@ namespace prs
 			"_CompU32 is not arithmetic type;"
 			"_CompU32 is not enum type;"
 			);
-		return (static_cast<uint32_t>(comp) & static_cast<uint32_t>(flag)) == 
-			static_cast<uint32_t>(flag) && comp_flag<_CompU32, _FlagsU32...>(comp, flags...) ;
+		return ((static_cast<uint32_t>(comp) & ignore_mask) == (static_cast<uint32_t>(flag)))
+			&& comp_flag(comp, flags...);
 	}
 
 	enum class EDefinitionTraits : uint32_t
@@ -84,19 +93,24 @@ namespace prs
 
 	enum class ENumericTypeTraits : uint32_t
 	{
-		Signed =	0x10000000,
-		Unsigned =	0x20000000,
-		Float =		0x01000000,
-		Double =	0x02000000,
-		Byte =		0x03000000,
-		Short =		0x04000000,
-		Int =		0x05000000,
-		Long =		0x06000400,
+		SChar =		0x10000000,
+		UChar =		0x20000000,
+		SShort =	0x30000000,
+		UShort =	0x40000000,
+		SInt =		0x50000000,
+		UInt =		0x60000000,
+		Float =		0x70000000,
+		SLong =		0x80000000,
+		ULong =		0x90000000,
+		SLLong =	0xA0000000,
+		ULLong =	0xB0000000,
+		Double =	0xC0000000,
 	};
 
 	class Lexeme;
 	class ExpressionLexeme;
 	class DefinitionTokenStructure;
+	class DefinitionTokenStructureDictionaryTreesQueue;
 
 	class ParserAllocator
 	{
@@ -148,6 +162,20 @@ namespace prs
 			m_def_token_struct_allocator.deallocate(def_token_struct, 1);
 		}
 
+		template <typename... _Trees>
+		DefinitionTokenStructureDictionaryTreesQueue* createDefinitionTokenStructureDictionaryTreesQueue(_Trees*... trees)
+		{
+			DefinitionTokenStructureDictionaryTreesQueue* def_token_struct_dict_trees_queue = m_def_token_struct_dict_trees_queue_allocator.allocate(1);
+			m_def_token_struct_dict_trees_queue_allocator.construct(def_token_struct_dict_trees_queue, trees...);
+			m_def_token_struct_dict_trees_queue_pointers.push_back(def_token_struct_dict_trees_queue);
+			return def_token_struct_dict_trees_queue;
+		}
+
+		void deleteDefinitionTokenStructureDictionaryTreesQueue(DefinitionTokenStructureDictionaryTreesQueue* def_token_struct_dict_trees_queue)
+		{
+			m_def_token_struct_dict_trees_queue_allocator.deallocate(def_token_struct_dict_trees_queue, 1);
+		}
+
 	private:
 
 		std::allocator<Lexeme> m_lexeme_allocator;
@@ -157,6 +185,9 @@ namespace prs
 
 		std::allocator<DefinitionTokenStructure>  m_def_token_struct_allocator;
 		std::list<DefinitionTokenStructure*> m_def_token_struct_pointers;
+
+		std::allocator<DefinitionTokenStructureDictionaryTreesQueue>  m_def_token_struct_dict_trees_queue_allocator;
+		std::list<DefinitionTokenStructureDictionaryTreesQueue*> m_def_token_struct_dict_trees_queue_pointers;
 
 	};
 
@@ -440,6 +471,7 @@ namespace prs
 			delete[] m_lexemes;
 		}
 
+	private:
 		template <typename _String_lexeme>
 		void create(
 			ParserAllocator* ptr_allocator, 
@@ -475,6 +507,7 @@ namespace prs
 			this->create<_String_lexemes...>(ptr_allocator, offset + 1, lexemes...);
 		}
 
+	public:
 		template <typename _String_lexeme, typename... _String_lexemes>
 		DefinitionTokenStructure(
 			ParserAllocator* ptr_allocator,
@@ -501,6 +534,18 @@ namespace prs
 				content += lexeme_length;
 			}
 			return true;
+		}
+
+		uint32_t getLength(const char* content) const
+		{
+			uint32_t length = 0;
+			for (uint32_t i = 0; i < m_lexemes_count; i++)
+			{
+				const uint32_t lexeme_length = m_lexemes[i]->getLength(content);
+				length += lexeme_length;
+				content += lexeme_length;
+			}
+			return length;
 		}
 
 		const Lexeme* getLexemeAt(const uint32_t index) const
@@ -588,41 +633,43 @@ namespace prs
 
 		void findByChars(
 			const char* chars, 
-			const uint32_t length, 
 			DefinitionTokenStructure** pptr_def_tok_struct,
 			DefinitionTokenStructureDictionaryTreeNode& node
 		)
 		{
-			if (node.m_next.empty() && length == 0)
+			if (node.m_next.empty())
 			{
-				*pptr_def_tok_struct = node.m_def_token_struct;
+				if (chars[0] == ' ' || chars[0] == '\0' || chars[0] == '\n' || chars[0] == '\t')
+				{
+					if (*pptr_def_tok_struct == nullptr)
+					{
+						*pptr_def_tok_struct = node.m_def_token_struct;
+					}
+					else if (node.m_def_token_struct != nullptr)
+					{
+						if (node.m_def_token_struct->getLexemesCount() > (*pptr_def_tok_struct)->getLexemesCount())
+						{
+							*pptr_def_tok_struct = node.m_def_token_struct;
+						}
+					}
+				}
 			}
 			for (decltype(auto) pair : node.m_next)
 			{
 				const Lexeme* lexeme = pair.first.getLexeme();
+				const uint32_t lexeme_length = lexeme->getLength(chars);
 				if (lexeme == nullptr)
 				{
 					return;
 				}
-				const uint32_t lexeme_length = lexeme->getLength(chars);
-				if (lexeme->compare(chars, lexeme_length))
+				else if (lexeme->compare(chars, lexeme_length))
 				{
-					//std::cout << lexeme->getChars() << std::endl;
 					for (int i = 0 ; i < pair.second.size(); i++)
 					{
-						findByChars(&chars[lexeme_length], length - lexeme_length, pptr_def_tok_struct, *pair.second[i]);
+						findByChars(&chars[lexeme_length], pptr_def_tok_struct, *pair.second[i]);
 					}
 				}
 			}
-		}
-
-		void findByChars(
-			const char* chars, 
-			const uint32_t length, 
-			DefinitionTokenStructure** pptr_def_tok_struct
-		)
-		{
-			findByChars(chars, length, pptr_def_tok_struct, m_node);
 		}
 
 		void findByChars(
@@ -630,7 +677,11 @@ namespace prs
 			DefinitionTokenStructure** pptr_def_tok_struct
 		)
 		{
-			findByChars(chars, strlen(chars), pptr_def_tok_struct, m_node);
+			if (*chars == ' ' || *chars == '\n' || *chars == '\t' || *chars == '\0')
+			{
+				return;
+			}
+			findByChars(chars, pptr_def_tok_struct, m_node);
 		}
 
 	private:
@@ -654,9 +705,16 @@ namespace prs
 		DefinitionTokenStructureDictionaryTrees(ParserAllocator& allocator) : 
 			m_allocator(allocator)
 		{
-			constexpr uint32_t float_type_flag = make_flag(ENumericTypeTraits::Float, ENumericTypeTraits::Signed);
-			constexpr uint32_t int_type_flag = make_flag(ENumericTypeTraits::Int, ENumericTypeTraits::Signed);
-			constexpr uint32_t double_type_flag = make_flag(ENumericTypeTraits::Double, ENumericTypeTraits::Signed);
+			constexpr uint32_t float_type_flag = make_flag(ENumericTypeTraits::Float);
+			constexpr uint32_t double_type_flag = make_flag(ENumericTypeTraits::Double);
+			constexpr uint32_t int_type_flag = make_flag(ENumericTypeTraits::SInt);
+
+			this->add(tree_bkt_figure_open, NULL, "{");
+			this->add(tree_bkt_figure_close, NULL, "}");
+			this->add(tree_assignment, NULL, "=");
+			this->add(tree_semicolon, NULL, ";");
+
+			this->add(tree_variable_name, NULL, "$_qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNM1234567890");
 
 			this->add(tree_type, NULL, "const", "$ ", "int");
 			this->add(tree_type, NULL, "const", "$ ", "float");
@@ -716,10 +774,77 @@ namespace prs
 		}
 
 		DefinitionTokenStructureDictionaryTree tree_type;
+		DefinitionTokenStructureDictionaryTree tree_variable_name;
 		DefinitionTokenStructureDictionaryTree tree_numeric;
+		DefinitionTokenStructureDictionaryTree tree_bkt_figure_open;
+		DefinitionTokenStructureDictionaryTree tree_bkt_figure_close;
+		DefinitionTokenStructureDictionaryTree tree_semicolon;
+		DefinitionTokenStructureDictionaryTree tree_assignment;
 
 	private:
 		ParserAllocator& m_allocator;
+	};
+
+	class DefinitionTokenStructureDictionaryTreesQueue
+	{
+	public:
+		DefinitionTokenStructureDictionaryTreesQueue() = default;
+
+		template <typename _Tree, typename... _Trees>
+		DefinitionTokenStructureDictionaryTreesQueue(_Tree* tree, _Trees*... trees) : 
+			m_length(sizeof...(_Trees) + 1),
+			m_trees(new DefinitionTokenStructureDictionaryTree*[m_length])
+		{
+			this->create(0, tree, trees...);
+		}
+
+		uint32_t getLength() const
+		{
+			return m_length;
+		}
+
+		DefinitionTokenStructureDictionaryTree* getTreeAt(uint32_t index) const
+		{
+			return m_trees[index];
+		}
+
+		std::vector<uint32_t> compare(const char** ptr_content) const
+		{
+			std::vector<uint32_t> user_data_queue;
+			for (uint32_t i = 0; i < m_length; i++)
+			{
+				_priv::skip_space(ptr_content);
+				DefinitionTokenStructure* def_tok_struct = nullptr;
+				m_trees[i]->findByChars(*ptr_content, &def_tok_struct);
+				if (def_tok_struct == nullptr)
+				{
+					return {};
+				}
+				user_data_queue.push_back(def_tok_struct->getUserData());
+				*ptr_content += def_tok_struct->getLength(*ptr_content);
+			}
+			return user_data_queue;
+		}
+
+	private:
+		template <typename _Tree>
+		void create(const uint32_t offset, _Tree* tree)
+		{
+			static_assert(std::is_same_v<_Tree, DefinitionTokenStructureDictionaryTree>);
+			static_assert(std::is_same_v<_Tree, DefinitionTokenStructureDictionaryTree>);
+			m_trees[offset] = tree;
+		}
+
+		template <typename _Tree, typename... _Trees>
+		void create(const uint32_t offset, _Tree* tree, _Trees*... trees)
+		{
+			static_assert(std::is_same_v<_Tree, DefinitionTokenStructureDictionaryTree>);
+			m_trees[offset] = tree;
+			this->create(offset + 1, trees...);
+		}
+
+		const uint32_t m_length;
+		DefinitionTokenStructureDictionaryTree** m_trees;
 	};
 
 	class Parser
@@ -737,14 +862,46 @@ namespace prs
 		{
 			ParserAllocator allocator;
 			DefinitionTokenStructureDictionaryTrees trees(allocator);
-			DefinitionTokenStructure* ptr_def_tok_struct = nullptr;
-			for (int i = 0; i < 1000000; i++)
-			{
-				trees.tree_numeric.findByChars("-100.066476d", &ptr_def_tok_struct);
-			}
-			std::cout << std::boolalpha << comp_flag(ptr_def_tok_struct->getUserData(), ENumericTypeTraits::Double) << "\n";
+			DefinitionTokenStructureDictionaryTreesQueue* queue = allocator.createDefinitionTokenStructureDictionaryTreesQueue(&trees.tree_type, &trees.tree_numeric);
+			DefinitionTokenStructure* ptr_def_tok_struct = nullptr;	
 
-			//std::cout << std::boolalpha << allocator.createDefinitionTokenStructure("-", "$0123456789", ".", "$0123456789", "f")->compare("-100.2532474706455f");
+
+			while (*content != '\0')
+			{
+				_priv::skip_space(&content);
+				trees.tree_type.findByChars(content, &ptr_def_tok_struct);
+				if (ptr_def_tok_struct != nullptr)
+				{
+					content += ptr_def_tok_struct->getLength(content);
+					ptr_def_tok_struct = nullptr;
+					trees.tree_variable_name.findByChars(content, &ptr_def_tok_struct);
+					if (ptr_def_tok_struct != nullptr)
+					{
+						content += ptr_def_tok_struct->getLength(content);
+						ptr_def_tok_struct = nullptr;
+						trees.tree_assignment.findByChars(content, &ptr_def_tok_struct);
+						if (ptr_def_tok_struct != nullptr)
+						{
+							content += ptr_def_tok_struct->getLength(content);
+							ptr_def_tok_struct = nullptr;
+							trees.tree_numeric.findByChars(content, &ptr_def_tok_struct);
+							if (ptr_def_tok_struct != nullptr)
+							{
+								content += ptr_def_tok_struct->getLength(content);
+								ptr_def_tok_struct = nullptr;
+								trees.tree_semicolon.findByChars(content, &ptr_def_tok_struct);
+								if (ptr_def_tok_struct != nullptr)
+								{
+									content += ptr_def_tok_struct->getLength(content);
+									ptr_def_tok_struct = nullptr;
+									std::cout << "good";
+								}
+							}
+						}
+					}
+				}
+			}
+		
 		}
 
 	private:
